@@ -106,25 +106,43 @@ sim_frechet_reg <- function(n, theta, cov_dist, cov_args) {
   list(x = X, y = Y)
 }
 
-# CMLE of (alpha, beta0, beta1) by L-BFGS-B, with alpha >= alpha_lower.
+# Moment-based starting values from a least-squares fit of log(y) on x.
+# Under the model, log(Y) = beta0 + beta1 * X + G / alpha with G standard
+# Gumbel (mean gam, variance pi^2 / 6).
+start_frechet <- function(y, x, alpha_lower = 1e-6) {
+
+  gam <- -digamma(1)
+
+  ols <- lm.fit(cbind(1, x), log(y))
+  alpha0 <- max(pi / (sqrt(6) * sd(ols$residuals)), 2 * alpha_lower)
+
+  c(
+    alpha = alpha0,
+    beta0 = unname(ols$coefficients[1]) - gam / alpha0,
+    beta1 = unname(ols$coefficients[2])
+  )
+}
+
+# CMLE of (alpha, beta0, beta1) by L-BFGS-B, with alpha >= alpha_lower,
+# started from start_frechet().
 #
 # Returns c(alpha_hat, beta0_hat, beta1_hat, convergence), where convergence
-# is optim()'s code (0 = success).
+# is optim()'s code (0 = success), or -1 if optim() stopped with an error
+# (the estimates are then NA).
 fit_frechet_cmle <- function(y, x, alpha_lower = 1e-6) {
 
-  fit <- optim(
-    par = c(
-      alpha = 1,
-      beta0 = mean(log(y)),
-      beta1 = 0
+  fit <- tryCatch(
+    optim(
+      par = start_frechet(y, x, alpha_lower),
+      fn = ll_frechet,
+      y = y,
+      x = x,
+      method = "L-BFGS-B",
+      lower = c(alpha_lower, -Inf, -Inf),
+      upper = c(Inf, Inf, Inf),
+      control = list(fnscale = -1)
     ),
-    fn = ll_frechet,
-    y = y,
-    x = x,
-    method = "L-BFGS-B",
-    lower = c(alpha_lower, -Inf, -Inf),
-    upper = c(Inf, Inf, Inf),
-    control = list(fnscale = -1)
+    error = function(e) list(par = rep(NA_real_, 3), convergence = -1)
   )
 
   c(

@@ -14,8 +14,8 @@ source("R/frechet.R")
 # TRUE: run the simulation and save it. FALSE: load the latest saved run.
 run_sim <- TRUE
 
-sample_sizes <- c(50, 250, 500, 1000, 2000)
-# sample_sizes <- c(50, 100, 250, 500, 750, 1000, 1250, 1500, 1750, 2000)
+sample_sizes <- c(50, 100, 250, 500, 750, 1000, 1250, 1500, 1750, 2000)
+# sample_sizes <- c(50, 250, 500, 1000, 2000)
 M <- 5000
 seed <- 02072024
 
@@ -80,9 +80,12 @@ simulate <- function() {
     experiment <- as.data.frame(experiment)
 
     # Keep track of optimization failures, including fits stuck on the
-    # alpha lower bound (optim reports those as converged)
-    at_bound <- experiment$alpha_hat <= 2 * alpha_lower
+    # alpha lower bound (optim reports those as converged). Fits where
+    # optim stopped with an error have convergence = -1.
+    at_bound <- !is.na(experiment$alpha_hat) &
+      experiment$alpha_hat <= 2 * alpha_lower
     ok <- experiment$convergence == 0 & !at_bound
+    n_errors <- sum(experiment$convergence == -1)
 
     convergence_rate <- mean(ok)
 
@@ -102,7 +105,8 @@ simulate <- function() {
       sd = s,
       fi_mc = fi_mc,
       convergence_rate = convergence_rate,
-      n_at_bound = sum(at_bound)
+      n_at_bound = sum(at_bound),
+      n_errors = n_errors
     )
   })
 
@@ -164,7 +168,8 @@ bias_table
 
 convergence_table <- rbind(
   convergence_rate = sapply(results, function(res) res$convergence_rate),
-  n_at_bound = sapply(results, function(res) res$n_at_bound)
+  n_at_bound = sapply(results, function(res) res$n_at_bound),
+  n_errors = sapply(results, function(res) res$n_errors)
 )
 
 convergence_table
