@@ -1,9 +1,10 @@
 ##############################################################################
 # CMLE for Frechet regression: Y | X ~ Frechet(shape = alpha,
-# scale = exp(beta0 + beta1 * X)).
+# scale = exp(beta0 + beta1 * X1 + beta2 * X2)), with independent covariates.
 # Model functions are in R/frechet.R.
 # Run from the project root (opening Code.Rproj does this for you):
-#   Rscript simulations/01_frechet_cmle.R
+#   Rscript simulations/01_frechet_cmle.R [setup]
+# where setup is one of names(setups) below (default: the value of setup).
 
 source("R/utils.R")
 source("R/frechet.R")
@@ -20,14 +21,7 @@ M <- 5000
 seed <- 02072024
 
 alpha_true <- exp(1)
-beta0_true <- pi
-beta1_true <- sqrt(2)
-
-true_values <- c(
-  alpha_hat = alpha_true,
-  beta0_hat = beta0_true,
-  beta1_hat = beta1_true
-)
+beta_true <- c(beta0 = pi, beta1 = sqrt(2), beta2 = sqrt(3))
 
 # Lower bound on alpha in optim(). Fits that end on it count as failures.
 alpha_lower <- 1e-6
@@ -35,16 +29,38 @@ alpha_lower <- 1e-6
 # Covariate distributions, with the expectation and variance of the
 # random variable with distribution dist and arguments args.
 covariates <- list(
-  exp4 = list(dist = "rexp", args = list(rate = 4), E = 1/4, Var = 1/16),
-  t6   = list(dist = "rt",   args = list(df = 6),   E = 0,   Var = 6/(6 - 2))
+  exp4  = list(dist = "rexp",   args = list(rate = 4),             E = 1/4, Var = 1/16),
+  t6    = list(dist = "rt",     args = list(df = 6),               E = 0,   Var = 6/(6 - 2)),
+  bern  = list(dist = "rbinom", args = list(size = 1, prob = 0.3), E = 0.3, Var = 0.3 * 0.7),
+  pois2 = list(dist = "rpois",  args = list(lambda = 2),           E = 2,   Var = 2)
 )
 
-covariate <- "t6"
+# Covariate setups: the distribution of X1, X2, ... (one per element of
+# beta_true after beta0). Covariates are drawn independently.
+setups <- list(
+  exp4_t6    = c("exp4", "t6"),     # skewed and heavy-tailed
+  t6_bern    = c("t6", "bern"),     # heavy-tailed and binary
+  exp4_bern  = c("exp4", "bern"),   # skewed and binary
+  pois2_bern = c("pois2", "bern"),  # both discrete
+  t6_pois2   = c("t6", "pois2")     # heavy-tailed and count
+)
 
-cov_dist <- covariates[[covariate]]$dist
-cov_args <- covariates[[covariate]]$args
+setup <- "t6_bern"
 
-study <- paste0("frechet_cmle_", covariate)
+# Rscript simulations/01_frechet_cmle.R <setup> overrides the choice above
+cmd_args <- commandArgs(trailingOnly = TRUE)
+if (length(cmd_args) > 0) setup <- cmd_args[1]
+stopifnot(setup %in% names(setups))
+
+covs <- covariates[setups[[setup]]]
+p <- length(covs)
+stopifnot(length(beta_true) == p + 1)
+
+par_names <- frechet_par_names(p)
+true_values <- setNames(c(alpha_true, beta_true), paste0(par_names, "_hat"))
+k <- length(true_values)
+
+study <- paste0("frechet_cmle_", setup)
 
 # Sample sizes shown in the QQ plots (must be in sample_sizes)
 qq_n  <- 500
@@ -54,9 +70,11 @@ stopifnot(all(c(qq_n, mah_n) %in% sample_sizes))
 # Theoretical Fisher Information
 fi <- fisher_info_frechet(
   alpha_true,
-  E = covariates[[covariate]]$E,
-  Var = covariates[[covariate]]$Var
+  E = sapply(covs, `[[`, "E"),
+  Var = sapply(covs, `[[`, "Var")
 )
+
+cat("Setup:", setup, "(", paste(setups[[setup]], collapse = ", "), ")\n")
 
 
 ##############################################################################
@@ -71,7 +89,7 @@ simulate <- function() {
     cat("Running n =", n, "\n")
 
     experiment <- replicate(M, {
-      dat <- sim_frechet_reg(n, true_values, cov_dist, cov_args)
+      dat <- sim_frechet_reg(n, true_values, covs)
       fit_frechet_cmle(dat$y, dat$x, alpha_lower)
     })
 
@@ -90,7 +108,7 @@ simulate <- function() {
     convergence_rate <- mean(ok)
 
     # Parameter estimates only
-    estimates <- experiment[ok, c("alpha_hat", "beta0_hat", "beta1_hat")]
+    estimates <- experiment[ok, names(true_values)]
 
     mu <- colMeans(estimates)
     s <- apply(estimates, 2, sd)
@@ -123,7 +141,8 @@ if (run_sim) {
       M = M,
       sample_sizes = sample_sizes,
       theta_true = true_values,
-      covariate = covariates[[covariate]],
+      setup = setup,
+      covariates = covs,
       alpha_lower = alpha_lower,
       seed = seed
     )
@@ -192,6 +211,18 @@ fi_error <- lapply(results, function(res) {
 
 fi_error
 
+# sqrt(n) * sd / asymptotic sd: should approach 1 as n grows
+asymptotic_sd <- sqrt(diag(solve(fi)))
+
+sd_ratio_table <- sweep(
+  sqrt(sample_sizes) * sd_table,
+  2,
+  asymptotic_sd,
+  "/"
+)
+
+sd_ratio_table
+
 ################################################################################
 # Bias and RMSE
 
@@ -201,31 +232,24 @@ summary_table <- do.call(rbind, lapply(results, function(res) {
 
   c(
     n = res$n,
-
-    bias_alpha = unname(br["bias", "alpha_hat"]),
-    bias_beta0 = unname(br["bias", "beta0_hat"]),
-    bias_beta1 = unname(br["bias", "beta1_hat"]),
-
-    rmse_alpha = unname(br["rmse", "alpha_hat"]),
-    rmse_beta0 = unname(br["rmse", "beta0_hat"]),
-    rmse_beta1 = unname(br["rmse", "beta1_hat"])
+    setNames(br["bias", ], paste0("bias_", par_names)),
+    setNames(br["rmse", ], paste0("rmse_", par_names))
   )
 }))
 
 summary_table
 
-cols <- 1:3
+cols <- seq_len(k)
 
-param_labels <- c(
-  expression(hat(alpha)),
-  expression(hat(beta)[0]),
-  expression(hat(beta)[1])
-)
+param_labels <- as.expression(c(
+  quote(hat(alpha)),
+  lapply(0:p, function(j) bquote(hat(beta)[.(j)]))
+))
 
 # RMSE
 matplot(
   summary_table[, "n"],
-  summary_table[, c("rmse_alpha", "rmse_beta0", "rmse_beta1")],
+  summary_table[, paste0("rmse_", par_names)],
   type = "b",
   pch = 1,
   lty = 1,
@@ -233,7 +257,7 @@ matplot(
   #log = "xy",
   xlab = "Sample size n",
   ylab = "RMSE",
-  main = "RMSE of the CMLE"
+  main = paste0("RMSE of the CMLE (", setup, ")")
 )
 
 legend(
@@ -248,14 +272,14 @@ legend(
 # Bias
 matplot(
   summary_table[, "n"],
-  summary_table[, c("bias_alpha", "bias_beta0", "bias_beta1")],
+  summary_table[, paste0("bias_", par_names)],
   type = "b",
   pch = 1,
   lty = 2,
   col = cols,
   xlab = "Sample size n",
   ylab = "Bias",
-  main = "Bias of the CMLE"
+  main = paste0("Bias of the CMLE (", setup, ")")
 )
 
 abline(h = 0, lty = 3)
@@ -275,9 +299,9 @@ legend(
 res_qq <- results[[paste0("n_", qq_n)]]
 z_qq <- standardize_estimates(res_qq$estimates, true_values, qq_n, fi)
 
-old_par <- par(mfrow = c(1, 3))
+old_par <- par(mfrow = c(1, k))
 
-for (j in 1:3) {
+for (j in 1:k) {
 
   qqnorm(
     z_qq[[j]],
@@ -304,7 +328,7 @@ D2_list <- lapply(results[paste0("n_", mah_n)], function(res) {
 # the largest theoretical quantile
 max_reps <- max(lengths(D2_list))
 lim <- max(
-  qchisq(ppoints(max_reps)[max_reps], df = 3),
+  qchisq(ppoints(max_reps)[max_reps], df = k),
   quantile(unlist(D2_list), 0.995)
 )
 
@@ -315,11 +339,11 @@ old_par <- par(
 )
 
 for (i in seq_along(mah_n)) {
-  mahalanobis_qq(D2_list[[i]], mah_n[i], lim)
+  mahalanobis_qq(D2_list[[i]], mah_n[i], lim, df = k)
 }
 
 mtext(
-  expression("Theoretical " * chi[3]^2 * " quantiles"),
+  as.expression(bquote("Theoretical " * chi[.(k)]^2 * " quantiles")),
   side = 1,
   outer = TRUE,
   line = 2
