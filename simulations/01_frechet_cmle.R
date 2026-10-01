@@ -1,10 +1,12 @@
 ##############################################################################
 # CMLE for Frechet regression: Y | X ~ Frechet(shape = alpha,
 # scale = exp(beta0 + beta1 * X)).
+# Model functions are in R/frechet.R.
 # Run from the project root (opening Code.Rproj does this for you):
 #   Rscript simulations/01_frechet_cmle.R
 
 source("R/utils.R")
+source("R/frechet.R")
 
 ##############################################################################
 # Parameters
@@ -15,12 +17,11 @@ run_sim <- TRUE
 sample_sizes <- c(50, 250, 500, 1000, 2000)
 # sample_sizes <- c(50, 100, 250, 500, 750, 1000, 1250, 1500, 1750, 2000)
 M <- 5000
+seed <- 02072024
 
 alpha_true <- exp(1)
 beta0_true <- pi
 beta1_true <- sqrt(2)
-
-theta_true <- c(alpha_true, beta0_true, beta1_true)
 
 true_values <- c(
   alpha_hat = alpha_true,
@@ -42,8 +43,6 @@ covariate <- "t6"
 
 cov_dist <- covariates[[covariate]]$dist
 cov_args <- covariates[[covariate]]$args
-E        <- covariates[[covariate]]$E
-Var      <- covariates[[covariate]]$Var
 
 study <- paste0("frechet_cmle_", covariate)
 
@@ -52,67 +51,12 @@ qq_n  <- 500
 mah_n <- c(50, 500, 1000, 2000)
 stopifnot(all(c(qq_n, mah_n) %in% sample_sizes))
 
-# Euler-Mascheroni constant
-gam <- -digamma(1)
-
 # Theoretical Fisher Information
-fi <- matrix(
-  c(
-    1 / alpha_true^2 * (pi^2 / 6 + (1 - gam)^2),
-    (1 - gam),
-    (1 - gam)*E,
-
-    1 - gam,
-    alpha_true^2,
-    alpha_true^2*E,
-
-    (1-gam)*E,
-    alpha_true^2*E,
-    alpha_true^2*(Var + E^2)
-  ),
-  nrow = 3,
-  byrow = TRUE,
-  dimnames = list(
-    c("alpha", "beta0", "beta1"),
-    c("alpha", "beta0", "beta1")
-  )
+fi <- fisher_info_frechet(
+  alpha_true,
+  E = covariates[[covariate]]$E,
+  Var = covariates[[covariate]]$Var
 )
-
-
-##############################################################################
-# Log-likelihood
-
-ll_frechet <- function(eta, y, x) {
-
-  alpha <- eta[1]
-  beta0 <- eta[2]
-  beta1 <- eta[3]
-
-  if (alpha <= 0){
-    s <- (-Inf)
-  } else {
-    d <- beta0 + beta1 * x - log(y)
-
-    s <- sum(
-      log(alpha) - log(y) +
-        alpha * d -
-        exp(alpha * d)
-    )
-  }
-
-  # L-BFGS-B needs finite values. NaN is treated like -Inf.
-  if (!is.finite(s)) {
-    if (is.nan(s) || s < 0) {
-      cat("negative infinity happened\n")
-      s <- -10^308
-    } else {
-      cat("INFINITY happened\n")
-      s <- 10^308
-    }
-  }
-
-  s
-}
 
 
 ##############################################################################
@@ -120,50 +64,15 @@ ll_frechet <- function(eta, y, x) {
 
 simulate <- function() {
 
-  set.seed(02072024)
+  set.seed(seed)
 
   results <- lapply(sample_sizes, function(n) {
 
     cat("Running n =", n, "\n")
 
     experiment <- replicate(M, {
-
-      args <- cov_args
-      args$n <- n
-      X <- do.call(cov_dist, args)
-
-      sigma <- exp(beta0_true + beta1_true * X)
-
-      Y <- evd::rfrechet(
-        n,
-        loc = 0,
-        scale = sigma,
-        shape = alpha_true
-      )
-
-      # CMLE
-      fit <- optim(
-        par = c(
-          alpha = 1,
-          beta0 = mean(log(Y)),
-          beta1 = 0
-        ),
-        fn = ll_frechet,
-        y = Y,
-        x = X,
-        method = "L-BFGS-B",
-        lower = c(alpha_lower, -Inf, -Inf),
-        upper = c(Inf, Inf, Inf),
-        control = list(fnscale = -1)
-      )
-
-      c(
-        alpha_hat = unname(fit$par[1]),
-        beta0_hat = unname(fit$par[2]),
-        beta1_hat = unname(fit$par[3]),
-        convergence = fit$convergence
-      )
-
+      dat <- sim_frechet_reg(n, true_values, cov_dist, cov_args)
+      fit_frechet_cmle(dat$y, dat$x, alpha_lower)
     })
 
     # replicate() gives parameters in rows, simulations in columns
@@ -209,10 +118,10 @@ if (run_sim) {
     settings = list(
       M = M,
       sample_sizes = sample_sizes,
-      theta_true = theta_true,
+      theta_true = true_values,
       covariate = covariates[[covariate]],
       alpha_lower = alpha_lower,
-      seed = 02072024
+      seed = seed
     )
   )
 } else {
@@ -283,26 +192,18 @@ fi_error
 
 summary_table <- do.call(rbind, lapply(results, function(res) {
 
-  estimates <- as.matrix(res$estimates)
-
-  bias <- colMeans(estimates) - true_values
-
-  rmse <- sqrt(
-    colMeans(
-      sweep(estimates, 2, true_values, "-")^2
-    )
-  )
+  br <- bias_rmse(res$estimates, true_values)
 
   c(
     n = res$n,
 
-    bias_alpha = unname(bias["alpha_hat"]),
-    bias_beta0 = unname(bias["beta0_hat"]),
-    bias_beta1 = unname(bias["beta1_hat"]),
+    bias_alpha = unname(br["bias", "alpha_hat"]),
+    bias_beta0 = unname(br["bias", "beta0_hat"]),
+    bias_beta1 = unname(br["bias", "beta1_hat"]),
 
-    rmse_alpha = unname(rmse["alpha_hat"]),
-    rmse_beta0 = unname(rmse["beta0_hat"]),
-    rmse_beta1 = unname(rmse["beta1_hat"])
+    rmse_alpha = unname(br["rmse", "alpha_hat"]),
+    rmse_beta0 = unname(br["rmse", "beta0_hat"]),
+    rmse_beta1 = unname(br["rmse", "beta1_hat"])
   )
 }))
 
@@ -366,37 +267,8 @@ legend(
 ################################################################################
 # Marginal QQ plots of sqrt(n) * (theta_hat - theta) / asymptotic sd
 
-fi_inv <- solve(fi)
-
-standardized <- lapply(results, function(res) {
-
-  est <- as.matrix(res$estimates)
-  n <- res$n
-
-  z <- sweep(
-    est,
-    2,
-    true_values,
-    "-"
-  )
-
-  z <- sqrt(n) * z
-
-  asymptotic_sd <- sqrt(diag(fi_inv))
-
-  z <- sweep(
-    z,
-    2,
-    asymptotic_sd,
-    "/"
-  )
-
-  as.data.frame(z)
-})
-
-names(standardized) <- names(results)
-
-z_qq <- standardized[[paste0("n_", qq_n)]]
+res_qq <- results[[paste0("n_", qq_n)]]
+z_qq <- standardize_estimates(res_qq$estimates, true_values, qq_n, fi)
 
 old_par <- par(mfrow = c(1, 3))
 
@@ -419,59 +291,15 @@ par(old_par)
 ################################################################################
 # Mahalanobis distances
 
-mahalanobis_d2 <- function(res, fi, theta_true) {
-
-  est <- as.matrix(res$estimates)
-
-  errors <- sweep(
-    est,
-    2,
-    theta_true,
-    "-"
-  )
-
-  apply(errors, 1, function(e) {
-    res$n * drop(t(e) %*% fi %*% e)
-  })
-}
-
-mahalanobis_qq <- function(D2, n, lim) {
-
-  theoretical <- qchisq(
-    ppoints(length(D2)),
-    df = 3
-  )
-
-  # Points beyond lim are not drawn, so report how many there are
-  n_out <- sum(D2 > lim)
-
-  plot(
-    theoretical,
-    sort(D2),
-    xlab = "",
-    ylab = "",
-    main = paste0("n = ", n, if (n_out > 0) paste0(" (", n_out, " above ", round(lim), ")")),
-    pch = 16,
-    cex = 0.5,
-    col = adjustcolor("blue", alpha.f = 0.3),
-    xlim = c(0, lim),
-    ylim = c(0, lim)
-  )
-
-  abline(0, 1, lty = 2)
-}
-
-D2_list <- lapply(
-  results[paste0("n_", mah_n)],
-  mahalanobis_d2,
-  fi = fi,
-  theta_true = theta_true
-)
+D2_list <- lapply(results[paste0("n_", mah_n)], function(res) {
+  mahalanobis_d2(res$estimates, true_values, res$n, fi)
+})
 
 # Common axis limit for all panels: the 99.5% quantile of D2, but at least
 # the largest theoretical quantile
+max_reps <- max(lengths(D2_list))
 lim <- max(
-  qchisq(ppoints(M)[M], df = 3),
+  qchisq(ppoints(max_reps)[max_reps], df = 3),
   quantile(unlist(D2_list), 0.995)
 )
 
