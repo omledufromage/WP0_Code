@@ -239,121 +239,140 @@ summary_table <- do.call(rbind, lapply(results, function(res) {
 
 summary_table
 
-cols <- seq_len(k)
-
-param_labels <- as.expression(c(
-  quote(hat(alpha)),
-  lapply(0:p, function(j) bquote(hat(beta)[.(j)]))
-))
-
-# RMSE
-matplot(
-  summary_table[, "n"],
-  summary_table[, paste0("rmse_", par_names)],
-  type = "b",
-  pch = 1,
-  lty = 1,
-  col = cols,
-  #log = "xy",
-  xlab = "Sample size n",
-  ylab = "RMSE",
-  main = paste0("RMSE of the CMLE (", setup, ")")
-)
-
-legend(
-  "topright",
-  legend = param_labels,
-  col = cols,
-  lty = 1,
-  pch = 1,
-  bty = "n"
-)
-
-# Bias
-matplot(
-  summary_table[, "n"],
-  summary_table[, paste0("bias_", par_names)],
-  type = "b",
-  pch = 1,
-  lty = 2,
-  col = cols,
-  xlab = "Sample size n",
-  ylab = "Bias",
-  main = paste0("Bias of the CMLE (", setup, ")")
-)
-
-abline(h = 0, lty = 3)
-
-legend(
-  "topright",
-  legend = param_labels,
-  col = cols,
-  lty = 2,
-  pch = 1,
-  bty = "n"
-)
-
 ################################################################################
-# Marginal QQ plots of sqrt(n) * (theta_hat - theta) / asymptotic sd
+# Plots
+#
+# Always saved to output/plots/<setup>.pdf (overwritten on each run); in an
+# interactive session they are also drawn on screen.
 
-res_qq <- results[[paste0("n_", qq_n)]]
-z_qq <- standardize_estimates(res_qq$estimates, true_values, qq_n, fi)
+make_plots <- function() {
 
-old_par <- par(mfrow = c(1, k))
+  cols <- seq_len(k)
 
-for (j in 1:k) {
+  param_labels <- as.expression(c(
+    quote(hat(alpha)),
+    lapply(0:p, function(j) bquote(hat(beta)[.(j)]))
+  ))
 
-  qqnorm(
-    z_qq[[j]],
-    main = paste0(names(z_qq)[j], ", n = ", qq_n),
-    xlab = "Theoretical normal quantiles",
-    ylab = "Empirical quantiles"
+  # RMSE
+  matplot(
+    summary_table[, "n"],
+    summary_table[, paste0("rmse_", par_names)],
+    type = "b",
+    pch = 1,
+    lty = 1,
+    col = cols,
+    #log = "xy",
+    xlab = "Sample size n",
+    ylab = "RMSE",
+    main = paste0("RMSE of the CMLE (", setup, ")")
   )
 
-  qqline(
-    z_qq[[j]]
+  legend(
+    "topright",
+    legend = param_labels,
+    col = cols,
+    lty = 1,
+    pch = 1,
+    bty = "n"
   )
+
+  # Bias
+  matplot(
+    summary_table[, "n"],
+    summary_table[, paste0("bias_", par_names)],
+    type = "b",
+    pch = 1,
+    lty = 2,
+    col = cols,
+    xlab = "Sample size n",
+    ylab = "Bias",
+    main = paste0("Bias of the CMLE (", setup, ")")
+  )
+
+  abline(h = 0, lty = 3)
+
+  legend(
+    "topright",
+    legend = param_labels,
+    col = cols,
+    lty = 2,
+    pch = 1,
+    bty = "n"
+  )
+
+  ################################################################################
+  # Marginal QQ plots of sqrt(n) * (theta_hat - theta) / asymptotic sd
+
+  res_qq <- results[[paste0("n_", qq_n)]]
+  z_qq <- standardize_estimates(res_qq$estimates, true_values, qq_n, fi)
+
+  old_par <- par(mfrow = c(1, k))
+
+  for (j in 1:k) {
+
+    qqnorm(
+      z_qq[[j]],
+      main = paste0(names(z_qq)[j], ", n = ", qq_n),
+      xlab = "Theoretical normal quantiles",
+      ylab = "Empirical quantiles"
+    )
+
+    qqline(
+      z_qq[[j]]
+    )
+  }
+
+  par(old_par)
+
+  ################################################################################
+  # Mahalanobis distances
+
+  D2_list <- lapply(results[paste0("n_", mah_n)], function(res) {
+    mahalanobis_d2(res$estimates, true_values, res$n, fi)
+  })
+
+  # Common axis limit for all panels: the 99.5% quantile of D2, but at least
+  # the largest theoretical quantile
+  max_reps <- max(lengths(D2_list))
+  lim <- max(
+    qchisq(ppoints(max_reps)[max_reps], df = k),
+    quantile(unlist(D2_list), 0.995)
+  )
+
+  old_par <- par(
+    mfrow = c(2, 2),
+    mar = c(2, 2, 2, 1),
+    oma = c(4, 4, 1, 1)
+  )
+
+  for (i in seq_along(mah_n)) {
+    mahalanobis_qq(D2_list[[i]], mah_n[i], lim, df = k)
+  }
+
+  mtext(
+    as.expression(bquote("Theoretical " * chi[.(k)]^2 * " quantiles")),
+    side = 1,
+    outer = TRUE,
+    line = 2
+  )
+
+  mtext(
+    expression("Empirical squared Mahalanobis distance " * D^2),
+    side = 2,
+    outer = TRUE,
+    line = 2
+  )
+
+  par(old_par)
 }
 
-par(old_par)
+plot_file <- file.path("output", "plots", paste0(setup, ".pdf"))
+dir.create(dirname(plot_file), recursive = TRUE, showWarnings = FALSE)
 
-################################################################################
-# Mahalanobis distances
+pdf(plot_file)
+make_plots()
+invisible(dev.off())
+message("Saved: ", plot_file)
 
-D2_list <- lapply(results[paste0("n_", mah_n)], function(res) {
-  mahalanobis_d2(res$estimates, true_values, res$n, fi)
-})
-
-# Common axis limit for all panels: the 99.5% quantile of D2, but at least
-# the largest theoretical quantile
-max_reps <- max(lengths(D2_list))
-lim <- max(
-  qchisq(ppoints(max_reps)[max_reps], df = k),
-  quantile(unlist(D2_list), 0.995)
-)
-
-old_par <- par(
-  mfrow = c(2, 2),
-  mar = c(2, 2, 2, 1),
-  oma = c(4, 4, 1, 1)
-)
-
-for (i in seq_along(mah_n)) {
-  mahalanobis_qq(D2_list[[i]], mah_n[i], lim, df = k)
-}
-
-mtext(
-  as.expression(bquote("Theoretical " * chi[.(k)]^2 * " quantiles")),
-  side = 1,
-  outer = TRUE,
-  line = 2
-)
-
-mtext(
-  expression("Empirical squared Mahalanobis distance " * D^2),
-  side = 2,
-  outer = TRUE,
-  line = 2
-)
-
-par(old_par)
+if (interactive()) make_plots()
